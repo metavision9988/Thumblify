@@ -38,15 +38,17 @@ class ScreenshotService {
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--disable-gpu',
+          '--disable-web-security',
+          '--allow-running-insecure-content',
+          '--disable-features=VizDisplayCompositor',
           '--window-size=1920x1080'
         ],
         defaultViewport: null,
-        timeout: 30000
+        timeout: 60000,
+        devtools: false
       });
 
-      console.log('Browser initialized successfully');
+      console.log('Browser initialized for advanced rendering');
       return this.browser;
     } catch (error) {
       console.error('Failed to initialize browser:', error);
@@ -66,6 +68,97 @@ class ScreenshotService {
     const timestamp = Date.now();
     const randomId = crypto.randomBytes(8).toString('hex');
     return `screenshot_${timestamp}_${randomId}.${format}`;
+  }
+
+  async waitForCompleteRendering(page) {
+    try {
+      // Wait for all images to load
+      await page.evaluate(async () => {
+        const images = Array.from(document.images);
+        await Promise.all(images.map(img => {
+          if (img.complete) return Promise.resolve();
+          return new Promise(resolve => {
+            img.onload = resolve;
+            img.onerror = resolve;
+            setTimeout(resolve, 5000); // Max wait 5s per image
+          });
+        }));
+      });
+
+      // Wait for fonts to load
+      await page.evaluateHandle(() => document.fonts.ready);
+
+      // Wait for CSS animations and transitions
+      await page.evaluate(() => {
+        return new Promise(resolve => {
+          const observer = new MutationObserver(() => {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => {
+              observer.disconnect();
+              resolve();
+            }, 1000);
+          });
+          
+          let timeout = setTimeout(() => {
+            observer.disconnect();
+            resolve();
+          }, 1000);
+          
+          observer.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['style', 'class']
+          });
+        });
+      });
+
+      // Wait for JavaScript frameworks (React, Vue, Angular)
+      await page.evaluate(() => {
+        return new Promise(resolve => {
+          const checkFrameworks = () => {
+            // React
+            if (window.React && window.ReactDOM) {
+              if (window.ReactDOM.version && window.ReactDOM.version.startsWith('18')) {
+                // React 18 with concurrent features
+                setTimeout(resolve, 1500);
+                return;
+              }
+            }
+            
+            // Vue.js
+            if (window.Vue) {
+              setTimeout(resolve, 1000);
+              return;
+            }
+            
+            // Angular
+            if (window.ng || window.angular) {
+              setTimeout(resolve, 1500);
+              return;
+            }
+            
+            // General DOM stability check
+            setTimeout(resolve, 800);
+          };
+          
+          if (document.readyState === 'complete') {
+            checkFrameworks();
+          } else {
+            window.addEventListener('load', checkFrameworks);
+          }
+        });
+      });
+
+      // Additional wait for Tailwind CSS and dynamic content
+      await page.waitForTimeout(2000);
+
+      console.log('Complete rendering wait finished');
+    } catch (error) {
+      console.warn('Error during rendering wait:', error.message);
+      // Fallback wait
+      await page.waitForTimeout(3000);
+    }
   }
 
   async captureScreenshot(options) {
@@ -91,8 +184,8 @@ class ScreenshotService {
       // Create new page
       page = await this.browser.newPage();
       
-      // Set viewport based on device
-      const viewport = this.getViewportForDevice(device, width, height);
+      // Set viewport based on device and preset
+      const viewport = this.getViewportForDevice(device, width, height, options.preset);
       await page.setViewport(viewport);
       
       // Set user agent
@@ -106,9 +199,9 @@ class ScreenshotService {
       
       console.log(`Navigating to: ${url}`);
       
-      // Navigate to URL
+      // Navigate to URL with extended waiting
       const response = await page.goto(url, {
-        waitUntil: 'networkidle2',
+        waitUntil: ['load', 'domcontentloaded', 'networkidle0'],
         timeout: timeout
       });
       
@@ -120,8 +213,10 @@ class ScreenshotService {
         throw new Error(`Failed to load page - HTTP ${response.status()}: ${response.statusText()}`);
       }
       
-      // Wait a bit for dynamic content
-      await page.waitForTimeout(2000);
+      console.log('Page loaded, waiting for complete rendering...');
+      
+      // Wait for JavaScript execution and CSS rendering
+      await this.waitForCompleteRendering(page);
       
       // Generate temporary filename
       const fileName = this.generateFileName(format);
@@ -270,28 +365,88 @@ class ScreenshotService {
     };
   }
 
-  getViewportForDevice(device, width, height) {
+  getResolutionPresets() {
+    return {
+      // Mobile Resolutions
+      'mobile-portrait': { width: 375, height: 667, label: 'Mobile Portrait (375×667)' },
+      'mobile-landscape': { width: 667, height: 375, label: 'Mobile Landscape (667×375)' },
+      'iphone-14': { width: 390, height: 844, label: 'iPhone 14 (390×844)' },
+      'iphone-14-pro': { width: 393, height: 852, label: 'iPhone 14 Pro (393×852)' },
+      'android-standard': { width: 360, height: 640, label: 'Android Standard (360×640)' },
+      
+      // Tablet Resolutions
+      'ipad': { width: 768, height: 1024, label: 'iPad (768×1024)' },
+      'ipad-pro': { width: 1024, height: 1366, label: 'iPad Pro (1024×1366)' },
+      'tablet-landscape': { width: 1024, height: 768, label: 'Tablet Landscape (1024×768)' },
+      
+      // Desktop Resolutions
+      'desktop-hd': { width: 1366, height: 768, label: 'Desktop HD (1366×768)' },
+      'desktop-fhd': { width: 1920, height: 1080, label: 'Desktop FHD (1920×1080)' },
+      'desktop-2k': { width: 2560, height: 1440, label: 'Desktop 2K (2560×1440)' },
+      'desktop-4k': { width: 3840, height: 2160, label: 'Desktop 4K (3840×2160)' },
+      
+      // Social Media Presets
+      'facebook-post': { width: 1200, height: 630, label: 'Facebook Post (1200×630)' },
+      'twitter-header': { width: 1500, height: 500, label: 'Twitter Header (1500×500)' },
+      'instagram-square': { width: 1080, height: 1080, label: 'Instagram Square (1080×1080)' },
+      'instagram-story': { width: 1080, height: 1920, label: 'Instagram Story (1080×1920)' },
+      'youtube-thumbnail': { width: 1280, height: 720, label: 'YouTube Thumbnail (1280×720)' },
+      
+      // Web Standard Presets
+      'web-banner': { width: 1200, height: 400, label: 'Web Banner (1200×400)' },
+      'blog-header': { width: 1200, height: 600, label: 'Blog Header (1200×600)' },
+      'thumbnail-large': { width: 800, height: 600, label: 'Large Thumbnail (800×600)' },
+      'thumbnail-medium': { width: 400, height: 300, label: 'Medium Thumbnail (400×300)' },
+      'thumbnail-small': { width: 200, height: 150, label: 'Small Thumbnail (200×150)' },
+      
+      // Custom Standard Sizes
+      'square-large': { width: 1000, height: 1000, label: 'Square Large (1000×1000)' },
+      'square-medium': { width: 500, height: 500, label: 'Square Medium (500×500)' },
+      'portrait': { width: 800, height: 1200, label: 'Portrait (800×1200)' },
+      'landscape': { width: 1200, height: 800, label: 'Landscape (1200×800)' }
+    };
+  }
+
+  getViewportForDevice(device, width, height, preset = null) {
+    // If preset is provided, use it
+    if (preset) {
+      const presets = this.getResolutionPresets();
+      if (presets[preset]) {
+        const presetData = presets[preset];
+        return {
+          width: presetData.width,
+          height: presetData.height,
+          isMobile: presetData.width <= 768,
+          hasTouch: presetData.width <= 768,
+          deviceScaleFactor: presetData.width <= 768 ? 2 : 1
+        };
+      }
+    }
+
     switch (device) {
       case 'mobile':
         return {
-          width: Math.min(width, 375),
-          height: Math.min(height, 667),
+          width: width || 375,
+          height: height || 667,
           isMobile: true,
-          hasTouch: true
+          hasTouch: true,
+          deviceScaleFactor: 2
         };
       case 'tablet':
         return {
-          width: Math.min(width, 768),
-          height: Math.min(height, 1024),
+          width: width || 768,
+          height: height || 1024,
           isMobile: true,
-          hasTouch: true
+          hasTouch: true,
+          deviceScaleFactor: 2
         };
       default: // desktop
         return {
-          width: width,
-          height: height,
+          width: width || 1920,
+          height: height || 1080,
           isMobile: false,
-          hasTouch: false
+          hasTouch: false,
+          deviceScaleFactor: 1
         };
     }
   }
