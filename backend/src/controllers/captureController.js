@@ -2,11 +2,13 @@ const URLValidator = require('../utils/urlValidator');
 const { captureUrlSchema } = require('../utils/validation');
 const { successResponse, errorResponse } = require('../utils/response');
 const { getDB } = require('../config/database');
+const ScreenshotService = require('../services/screenshotService');
 
 class CaptureController {
   constructor() {
     this.urlValidator = new URLValidator();
     this.db = getDB();
+    this.screenshotService = new ScreenshotService();
   }
 
   async captureUrl(req, res) {
@@ -58,6 +60,14 @@ class CaptureController {
         options: job.options,
         createdAt: job.createdAt
       };
+
+      // Start processing the job asynchronously (don't wait for completion)
+      // Skip async processing in test environment
+      if (process.env.NODE_ENV !== 'test') {
+        this.processJobAsync(job.id).catch(error => {
+          console.error(`Async job processing failed for ${job.id}:`, error);
+        });
+      }
 
       res.status(201).json(successResponse(result, 'Capture job created'));
     } catch (err) {
@@ -188,6 +198,73 @@ class CaptureController {
       res.status(500).json(errorResponse(
         { message: 'Internal server error', code: 'INTERNAL_ERROR' }
       ));
+    }
+  }
+
+  // Process job synchronously (for immediate processing)
+  async processJobSync(req, res) {
+    try {
+      const { jobId } = req.params;
+      
+      const job = await this.db.findCaptureJobById(jobId);
+      
+      if (!job) {
+        return res.status(404).json(errorResponse(
+          { message: 'Capture job not found', code: 'JOB_NOT_FOUND' }
+        ));
+      }
+
+      // Check if user owns this job
+      if (job.userId !== req.user.id) {
+        return res.status(403).json(errorResponse(
+          { message: 'Access denied to this job', code: 'ACCESS_DENIED' }
+        ));
+      }
+
+      // Process the job
+      const result = await this.screenshotService.processJob(jobId);
+      
+      if (!result.success) {
+        return res.status(400).json(errorResponse(
+          { message: result.error, code: 'PROCESSING_FAILED' }
+        ));
+      }
+
+      res.status(200).json(successResponse(result.result, 'Job processed successfully'));
+    } catch (err) {
+      console.error('Process job error:', err);
+      res.status(500).json(errorResponse(
+        { message: 'Internal server error', code: 'INTERNAL_ERROR' }
+      ));
+    }
+  }
+
+  // Process job asynchronously (background processing)
+  async processJobAsync(jobId) {
+    try {
+      console.log(`Starting async processing for job ${jobId}`);
+      const result = await this.screenshotService.processJob(jobId);
+      
+      if (result.success) {
+        console.log(`Job ${jobId} completed successfully`);
+      } else {
+        console.error(`Job ${jobId} failed: ${result.error}`);
+      }
+      
+      return result;
+    } catch (error) {
+      console.error(`Async processing failed for job ${jobId}:`, error);
+      throw error;
+    }
+  }
+
+  // Cleanup method for graceful shutdown
+  async cleanup() {
+    try {
+      await this.screenshotService.cleanup();
+      console.log('CaptureController cleanup completed');
+    } catch (error) {
+      console.error('CaptureController cleanup error:', error);
     }
   }
 }

@@ -27,4 +27,8 @@ router.get('/analytics', authMiddleware, (req, res) =>
   captureController.getUsageAnalytics(req, res)
 );
 
+router.post('/jobs/:jobId/process', authMiddleware, (req, res) => 
+  captureController.processJobSync(req, res)
+);
+
 module.exports = router;
